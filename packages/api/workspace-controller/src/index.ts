@@ -16,6 +16,8 @@ import type {
   WorkspaceCreateRequest,
   WorkspaceCreateValue,
   WorkspaceDeleteRequest,
+  WorkspaceDeleteSessionRequest,
+  WorkspaceDeleteSessionValue,
   WorkspaceDeleteValue,
   WorkspaceFollowFrame,
   WorkspaceId,
@@ -169,6 +171,18 @@ export class WorkspaceController extends TypertRemoteService {
   @Remote('unarchiveSession')
   unarchiveSession(request: WorkspaceUnarchiveSessionRequest): Promise<WorkspaceArchiveValue> {
     return this.commands.unarchiveSession(request)
+  }
+
+  /**
+   * Destroy one Session: its running work stops, its live Agent ends, its
+   * stored log is destroyed, and every registry reference to it is dropped.
+   * The action is irreversible, so Clients confirm with the user first.
+   * @param request - Session identity to destroy.
+   * @returns deletion confirmation.
+   */
+  @Remote('deleteSession')
+  deleteSession(request: WorkspaceDeleteSessionRequest): Promise<WorkspaceDeleteSessionValue> {
+    return this.commands.deleteSession(request)
   }
 
   /**

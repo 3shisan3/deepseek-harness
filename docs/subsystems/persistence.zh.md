@@ -358,6 +358,8 @@ Storage semantics shared by every backend: events are contiguous from seq 0 and 
 
 Visibility: a created session is observable through `stat`/`list`/`open` in this process from the moment `create` resolves, even while a backend defers physical materialization (a pure optimization); other processes see the session only once it materializes, and a session that never materialized before a crash never existed. `SessionHandle.flush` forces materialization.
 
+Removal: `delete` destroys one stored session whole — never part of a log, never an event. A deleted session is absent from `stat`/`list`/`open` immediately, and the identity is not reserved against a later `create`.
+
 Freshness: once an `append` or `flush` resolves, reads started afterwards on this backend instance observe at least that prefix.
 
 ```ts cordis-catalog
@@ -420,6 +422,27 @@ abstract stat(id: SessionId, options?: SessionPersistenceStatOptions): Promise<S
  * @returns one snapshot per stored session.
  */
 abstract list(options?: SessionPersistenceListOptions): Promise<readonly SessionPersistenceSnapshot[]>
+
+/**
+ * Destroy one stored session: its materialized artifact and every other
+ * format generation kept beside it. Storage does not know who else holds
+ * the identity, so the caller owns stopping live work and removing registry
+ * references; after resolution the session is gone and `stat` reports
+ * `undefined`.
+ *
+ * A created-but-unmaterialized session has no artifact: a live write handle
+ * refuses the call, and a backend that keeps an in-process entry releases it
+ * when that handle closes. Idempotent: an identity no stored session
+ * occupies resolves without writing. Refusal is a definite miss's opposite —
+ * an active write handle keeps the log alive and mutating, so deleting under
+ * one would leave the handle appending to a destroyed artifact; close it
+ * first.
+ * @param id - the stored session to destroy.
+ * @returns `true` when a stored session was removed, `false` when none held
+ *   the identity.
+ * @throws {SessionAlreadyOwnedError} when a live write handle still owns the id.
+ */
+abstract delete(id: SessionId): Promise<boolean>
 ```
 
 Types: [SessionId](core.zh.md)

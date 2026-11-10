@@ -80,6 +80,8 @@ Client 的首次 `follow`、重连首屏与 `loadOlder()` 至少请求 50 条以
 
 本控制器通过 `ctx.plugin` 组合 `ArchivedSessionGate`：在 Agent 注册表、Session store 与 Workspace 注册表就绪后加载，随控制器一起释放。它的 `agent/pre-step` 监听器会拒绝为已归档会话或其子代理子孙——沿可用的 Session header 读取，从不包括 fork——提出的步骤，因此迟到的唤醒投递会让该回合以 `blocked` 收口而不发出模型请求；取消归档即为整条血缘解除门禁。Subagent runtime 另行检查保留的创建祖先，覆盖中间创建者已离线的托管后代。已归档会话仍在跑的工作由各自的 owner 通过 Workspace 注册表的归档准入（[接缝](../../workspace/workspace/README.zh.md)）报告与停止：运行中的回合由 [Agent 注册表](../../core/agent/README.zh.md)负责，所属任务由[任务注册表接缝](../../jobs/jobs/README.zh.md)负责，子代理子孙由 [Subagent](../../subagent/subagent/README.zh.md) runtime 负责，提醒由 [Schedule](../../schedule/schedule/README.zh.md) 插件负责；本控制器自己不报告任何内容。
 
+同一控制器也为它自己发布的 Agent 响应 Workspace 注册表的 `workspace/session-dispose` 事件：`ApiSessionAgentController` 保留每次 `create`/`resume` 得到的 `AgentHandle` 并拆除它，使会话删除能关闭那份否则会拒绝日志删除的持久写句柄。由其他 owner 发布的 Agent——subagent routing、ACP——不受影响，各自的 owner 自行响应同一事件。控制器还把注册表的 `workspace/session-deleted` 事件转发为 `api-session/removed`，因此被销毁的冷会话也会离开客户端列表，尽管它永远不会触发 `session/disposed` 边。
+
 <a id="client-references"></a>
 ## Client 引用
 

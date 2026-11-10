@@ -17,9 +17,9 @@ const CLIENT_SERVICES: Readonly<Record<string, readonly string[]>> = {
   theme: ['getTheme', 'setTheme', 'setFontSize', 'register', 'overrideTokens'],
   uiWorkspace: [
     'openSession', 'openWorkspace', 'forkSession', 'connectWorkspace', 'startSession', 'archiveSession', 'unarchiveSession',
-    'pickDirectory', 'listDirectory', 'createDirectory',
+    'deleteSession', 'pickDirectory', 'listDirectory', 'createDirectory',
   ],
-  workspaces: ['create', 'rename', 'delete', 'insertSessionBefore', 'archiveSession', 'unarchiveSession'],
+  workspaces: ['create', 'rename', 'delete', 'insertSessionBefore', 'archiveSession', 'unarchiveSession', 'deleteSession'],
 }
 
 const CLIENT_EVENTS = new Set([

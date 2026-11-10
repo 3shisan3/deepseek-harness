@@ -1293,11 +1293,13 @@ Source: [`packages/api/session-controller/src/types.ts`](../../packages/api/sess
 
 #### `api-session/removed` — emit
 
-A Session left the live Host registry.
+A Session left the Host's listed corpus: it was disposed from the live registry, or destroyed outright. The row is gone and never returns under the same identity.
 
 ```ts cordis-catalog
 /**
- * A Session left the live Host registry.
+ * A Session left the Host's listed corpus: it was disposed from the live
+ * registry, or destroyed outright. The row is gone and never returns under
+ * the same identity.
  * @mode emit
  * @param sessionId - removed Session identity.
  */

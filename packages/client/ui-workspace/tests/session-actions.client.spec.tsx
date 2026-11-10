@@ -25,11 +25,15 @@ import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 import type {
   RowToast, RowToastState, SessionArchiveConfirmInjected, SessionArchiveConfirmRequest,
+  SessionDeleteConfirmInjected, SessionDeleteConfirmRequest,
   SessionRenameDialogInjected, SessionRenameTarget,
 } from '../src/client/contract/slots.ts'
 import {
   ArchiveSessionRowButton, SessionArchiveConfirmDialog,
 } from '../src/client/session-actions/ArchiveSession.tsx'
+import {
+  DeleteSessionHeaderAction, type DeleteSessionHeaderActionProps, DeleteSessionRowButton, SessionDeleteConfirmDialog,
+} from '../src/client/session-actions/DeleteSession.tsx'
 import { PinSessionRowButton } from '../src/client/session-actions/PinSession.tsx'
 import { SessionRenameDialog } from '../src/client/session-actions/RenameSession.tsx'
 import { RowActionToast } from '../src/client/session-actions/RowActionToast.tsx'
@@ -162,6 +166,144 @@ describe('archive action', () => {
     fireEvent.click(screen.getByRole('button', { name: '取消归档' }))
     expect(archive.unarchiveSession).toHaveBeenCalledWith(sid('one'))
     expect(archive.archiveSession).toHaveBeenCalledOnce()
+  })
+})
+
+describe('delete action', () => {
+  const deleteShare = () => ({
+    useArchived: hook(idSet()), requestSessionDelete: vi.fn(),
+  })
+
+  it('asks for confirmation instead of deleting on a single click', () => {
+    const useSessionAccess = vi.fn(() => true)
+    const share = deleteShare()
+    const view = render(<DeleteSessionRowButton {...actionRow} {...share} useSessionAccess={useSessionAccess} />)
+    expect(useSessionAccess).toHaveBeenCalledWith(sid('one'), 'workspace/deleteSession')
+    fireEvent.click(screen.getByRole('button', { name: '删除会话' }))
+    expect(share.requestSessionDelete).toHaveBeenCalledWith(sid('one'))
+    view.unmount()
+  })
+
+  it('offers nothing while the access snapshot excludes deletion', () => {
+    const share = deleteShare()
+    const view = render(
+      <DeleteSessionRowButton
+        {...actionRow}
+        {...share}
+        useSessionAccess={vi.fn(() => false)}
+      />,
+    )
+    expect(view.container.innerHTML).toBe('')
+  })
+
+  it('still offers deletion on an archived row, where it is the usual path', () => {
+    const share = deleteShare()
+    const view = render(
+      <DeleteSessionRowButton
+        {...actionRow}
+        {...share}
+        useArchived={hook(idSet('one'))}
+        useSessionAccess={vi.fn(() => true)}
+      />,
+    )
+    expect(screen.getByRole('button', { name: '删除会话' })).toBeTruthy()
+    view.unmount()
+  })
+})
+
+describe('SessionDeleteConfirmDialog', () => {
+  /** The dialog over a test-owned request source; settling clears the request the way apply does. */
+  function deleteDialog(deleteSession: SessionDeleteConfirmInjected['deleteSession'], translate = t) {
+    const request = createSnapshotStore<SessionDeleteConfirmRequest | null>(null)
+    const settleSessionDelete = vi.fn(() => { request.set(null) })
+    render(
+      <SessionDeleteConfirmDialog
+        {...overlay}
+        t={translate}
+        useDeleteRequest={bindSnapshotSelector(request)}
+        settleSessionDelete={settleSessionDelete}
+        deleteSession={deleteSession}
+      />,
+    )
+    const ask = (): void => {
+      act(() => { request.set({ sessionId: sid('one'), displayTitle: 'Old session' }) })
+    }
+    return { settleSessionDelete, ask }
+  }
+
+  it('renders nothing until a confirmation is requested', () => {
+    deleteDialog(vi.fn(async () => {}))
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('warns that the deletion is permanent and destroys the session on confirm', async () => {
+    const pending = Promise.withResolvers<undefined>()
+    const deleteSession = vi.fn(() => pending.promise)
+    const { settleSessionDelete, ask } = deleteDialog(deleteSession)
+    ask()
+    const dialog = screen.getByRole('dialog', { name: '删除此会话？' })
+    expect(dialog.textContent).toContain('将永久删除“Old session”的会话记录，无法恢复。')
+    fireEvent.click(screen.getByRole('button', { name: '删除会话' }))
+    expect(deleteSession).toHaveBeenCalledWith(sid('one'))
+    // While the Host call is pending, closing is blocked and the status shows.
+    expect(screen.getByRole('status').textContent).toBe('正在删除会话…')
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(settleSessionDelete).not.toHaveBeenCalled()
+    await act(async () => { pending.resolve(undefined) })
+    expect(settleSessionDelete).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('keeps the dialog open with a rejection surfaced, and Cancel settles without deleting', async () => {
+    const deleteSession = vi.fn<SessionDeleteConfirmInjected['deleteSession']>()
+      .mockRejectedValueOnce(new Error('delete exploded'))
+    const { settleSessionDelete, ask } = deleteDialog(deleteSession)
+    ask()
+    fireEvent.click(screen.getByRole('button', { name: '删除会话' }))
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('delete exploded') })
+    expect(settleSessionDelete).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(settleSessionDelete).toHaveBeenCalledOnce()
+    expect(deleteSession).toHaveBeenCalledOnce()
+  })
+
+  it('ignores Escape while the Host call is pending and reports a non-Error reason as text', async () => {
+    const pending = Promise.withResolvers<undefined>()
+    const deleteSession = vi.fn<SessionDeleteConfirmInjected['deleteSession']>()
+      .mockReturnValueOnce(pending.promise)
+      .mockRejectedValueOnce('plain failure')
+    const { settleSessionDelete, ask } = deleteDialog(deleteSession)
+    ask()
+    fireEvent.click(screen.getByRole('button', { name: '删除会话' }))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(settleSessionDelete).not.toHaveBeenCalled()
+    await act(async () => { pending.resolve(undefined) })
+    expect(settleSessionDelete).toHaveBeenCalledOnce()
+
+    // A rejection that is not an Error still surfaces as readable text.
+    ask()
+    fireEvent.click(screen.getByRole('button', { name: '删除会话' }))
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('plain failure') })
+  })
+})
+
+describe('delete header action', () => {
+  const headerProps = () => ({
+    sessionId: sid('one'),
+    useSessionAccess: vi.fn(() => true),
+    requestSessionDelete: vi.fn(),
+    t,
+  }) as DeleteSessionHeaderActionProps
+
+  it('asks for the same confirmation and is absent without access', () => {
+    const props = headerProps()
+    const view = render(<DeleteSessionHeaderAction {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: '删除会话' }))
+    expect(props.requestSessionDelete).toHaveBeenCalledWith(sid('one'))
+    view.unmount()
+
+    const refused = render(<DeleteSessionHeaderAction {...props} useSessionAccess={() => false} />)
+    expect(refused.container.innerHTML).toBe('')
   })
 })
 
@@ -514,6 +656,13 @@ describe('RowActionToast', () => {
     await toastSurface()
     expect(screen.queryByRole('alert')).toBeNull()
     expect(document.body.textContent).toBe('')
+  })
+
+  it('shows the deleted notice with no actions', async () => {
+    const { notify } = await toastSurface()
+    notify({ kind: 'deleted', sessionId: sid('one') })
+    expect(screen.getByRole('alert').textContent).toContain('会话已删除')
+    expect(screen.queryByRole('button')).toBeNull()
   })
 
   it.each([

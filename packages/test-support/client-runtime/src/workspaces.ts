@@ -155,6 +155,26 @@ export class TestWorkspaces implements IWorkspaces {
   }
 
   /**
+   * Destroy a session (recorded). The default mirrors the production face's
+   * registry-global effect — the id leaves the archive and pin sets; leaving a
+   * Workspace account is the follow stream's upsert, which a scenario needing
+   * it observes through its own session source.
+   * @param sessionId - session to destroy.
+   */
+  async deleteSession(sessionId: SessionId): Promise<void> {
+    this.calls.push({ method: 'deleteSession', args: [sessionId] })
+    const stub = this.stubs.get('deleteSession')
+    if (stub !== undefined) {
+      await (stub(sessionId) as Promise<void>)
+      return
+    }
+    await this.update((draft) => {
+      draft.archivedSessionIds = draft.archivedSessionIds.filter(id => id !== sessionId)
+      draft.pinnedSessionIds = draft.pinnedSessionIds.filter(id => id !== sessionId)
+    })
+  }
+
+  /**
    * Unarchive a session (recorded). The default mirrors the production face's
    * observable effect: the id leaves the list state's archive set.
    * @param sessionId - session to unarchive.

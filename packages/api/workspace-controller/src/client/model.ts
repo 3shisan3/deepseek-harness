@@ -10,6 +10,8 @@ import type {
   WorkspaceBaseline,
   WorkspaceCreateRequest,
   WorkspaceCreateValue,
+  WorkspaceDeleteSessionRequest,
+  WorkspaceDeleteSessionValue,
   WorkspaceDeleteValue,
   WorkspaceInsertSessionBeforeRequest,
   WorkspaceOrderValue,
@@ -221,6 +223,20 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
       this.installArchived(result.value.archivedSessionIds)
     }
     return result
+  }
+
+  /**
+   * Destroy one Session. The Host removes it from every Workspace account, the
+   * archive set, and the pin set before resolving, and the follow stream then
+   * carries those same changes; the local projection is left to the stream so
+   * this call and a concurrently arriving frame cannot disagree.
+   * @param sessionId - Session to destroy.
+   * @returns generated Remote result.
+   */
+  async deleteSession(
+    sessionId: WorkspaceDeleteSessionRequest['sessionId'],
+  ): Promise<RemoteResult<WorkspaceDeleteSessionValue>> {
+    return await this.remote.deleteSession({ sessionId })
   }
 
   /**

@@ -3,7 +3,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent, AgentOptions, AgentSetup } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle, AgentOptions, AgentSetup } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
@@ -12,6 +12,7 @@ import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
 import { RemoteError, remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
 import type {} from '@deepseek-ai/dsh-typert-registry'
+import type {} from '@deepseek-ai/dsh-workspace'
 
 /** Cold Session identity absent from persistence. */
 export class ApiSessionNotFound extends Error {}
@@ -117,12 +118,16 @@ export class ApiSessionAgentController {
   private readonly resumes = new Map<SessionId, Promise<Agent>>()
   private readonly claims = new Map<SessionId, Promise<void>>()
   private readonly imageAdmissionChains = new WeakMap<Agent, Promise<void>>()
+  /** Teardown handles of the Agents this controller published, so a deletion can end one. */
+  private readonly handles = new Map<SessionId, AgentHandle>()
 
   /** @param ctx - Host context carrying Agent, model, persistence, and Typert services. */
   constructor(private readonly ctx: Context) {}
 
   /**
-   * Configure Session and Agent lookups for Typert.
+   * Configure Session and Agent lookups for Typert, and answer the Workspace
+   * registry's session-dispose seam with the teardown handle this controller
+   * published for that session.
    */
   initialize(): void {
     const ctx = this.ctx
@@ -141,6 +146,11 @@ export class ApiSessionAgentController {
       if ('error' in found) throw found.error
       return found.agent.ctx
     })
+    // The registry's delete sequence ends the live Agent through this seam, so
+    // the durable write handle closes before the log is destroyed. Agents other
+    // owners published — subagent routing, ACP — answer the same seam for
+    // themselves.
+    ctx.on('workspace/session-dispose', async ({ sessionId }) => { await this.release(sessionId) })
   }
 
   /**
@@ -150,6 +160,30 @@ export class ApiSessionAgentController {
    */
   async resolveAgent(sessionId: SessionId): Promise<ApiSessionAgentResult> {
     return this.resolve(sessionId)
+  }
+
+  /**
+   * Tear down the live Agent this controller published for a Session, ending
+   * its loop and releasing its durable write ownership so the stored log can
+   * be destroyed. The teardown drains the log's closing events first, so the
+   * deletion that follows sees a complete log rather than an open turn.
+   * Agents another owner published — subagent routing, ACP — are untouched;
+   * their owner decides their teardown.
+   * @param sessionId - Session whose live Agent is ended.
+   * @returns whether this controller held an Agent to tear down.
+   */
+  async release(sessionId: SessionId): Promise<boolean> {
+    const handle = this.handles.get(sessionId)
+    if (handle === undefined) return false
+    this.handles.delete(sessionId)
+    await handle.dispose()
+    return true
+  }
+
+  /** Retain the published Agent's teardown handle and hand back the Agent. */
+  private publish(handle: AgentHandle): Agent {
+    this.handles.set(handle.agent.id, handle)
+    return handle.agent
   }
 
   /**
@@ -310,11 +344,11 @@ export class ApiSessionAgentController {
     if (published !== undefined && hasApiSessionSubagentOwner(published)) {
       throw new ApiSessionSubagentOwnership(sessionId)
     }
-    return (await this.ctx.agents.resume({
+    return this.publish(await this.ctx.agents.resume({
       resumeSessionId: sessionId,
       agentOptions: this.agentOptions(),
       setup: composition.setup,
-    })).agent
+    }))
   }
 
   private async inOrder<Value>(sessionId: SessionId, operation: () => Promise<Value>): Promise<Value> {
@@ -364,11 +398,11 @@ export class ApiSessionAgentController {
     if (!reusable) return this.createMinted(request.cwd, composition)
     this.assertPresetApplicable(sessionId, request.agentPreset)
     try {
-      return (await this.ctx.agents.resume({
+      return this.publish(await this.ctx.agents.resume({
         resumeSessionId: sessionId,
         agentOptions: this.agentOptions(),
         setup: this.reuseSetup(composition),
-      })).agent
+      }))
     } catch (error: unknown) {
       if (error instanceof ApiSessionStartedSinceObserved) return this.createMinted(request.cwd, composition)
       if (!(error instanceof Error) || error.name !== 'SessionAlreadyOwnedError') throw error
@@ -439,7 +473,7 @@ export class ApiSessionAgentController {
     } catch (error: unknown) {
       throw new Error(`failed to ensure project directory "${cwd}": ${String(error)}`, { cause: error })
     }
-    return (await this.ctx.agents.create({
+    return this.publish(await this.ctx.agents.create({
       sessionId,
       agentOptions: this.agentOptions(),
       meta: {
@@ -447,7 +481,7 @@ export class ApiSessionAgentController {
         ...(composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset }),
       },
       setup: composition.setup,
-    })).agent
+    }))
   }
 
   private agentOptions(): AgentOptions {

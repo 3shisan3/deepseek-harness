@@ -1,0 +1,19 @@
+# Bilingual-pair consistency record for 2026-11-10-session-deletion-through-the-workspace-seam.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-10-session-deletion-through-the-workspace-seam.md
+/agent-note-destroy-a-session-through-the-workspace-seam:
+  en: 318340a21a50d4dd
+  zh: 363e6072e100c1a8
+/agent-note-destroy-a-session-through-the-workspace-seam/problem:
+  en: 40e6e28efab121c0
+  zh: be0d2b75edc35b8e
+/agent-note-destroy-a-session-through-the-workspace-seam/decision:
+  en: 34452322bf9a3272
+  zh: 975936efee3d408a
+/agent-note-destroy-a-session-through-the-workspace-seam/alternatives-considered:
+  en: 32dec8d02df74910
+  zh: 9fc20f0f12ec32c0
+/agent-note-destroy-a-session-through-the-workspace-seam/consequences:
+  en: b5b4682ae12abc6c
+  zh: 8eb76368501b4110

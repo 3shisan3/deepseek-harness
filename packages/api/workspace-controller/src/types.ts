@@ -129,6 +129,16 @@ export interface WorkspaceUnarchiveSessionRequest {
   readonly sessionId: SessionId
 }
 
+/** Session requested for destruction from Workspace grouping surfaces. */
+export interface WorkspaceDeleteSessionRequest {
+  readonly sessionId: SessionId
+}
+
+/** Receipt after a Session's log and registry references are gone. */
+export interface WorkspaceDeleteSessionValue {
+  readonly deleted: true
+}
+
 /** Complete archived Session set after a mutation. */
 export interface WorkspaceArchiveValue {
   readonly archivedSessionIds: readonly SessionId[]

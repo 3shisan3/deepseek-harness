@@ -375,6 +375,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'sessionId', description: 'Session to unarchive.' }],
       },
       {
+        signature: 'deleteSession(sessionId: SessionId): Promise<void>',
+        description: 'Destroy a Session: the Host stops its running work, ends its live Agent, deletes its stored log, and drops every registry reference to it. There is no undo. A Session that is the current selection clears into the New Session view state.',
+        parameters: [{ name: 'sessionId', description: 'Session to destroy.' }],
+      },
+      {
         signature: 'pickDirectory(): Promise<string | null>',
         description: 'Open the Host-native directory picker.',
         parameters: [],
@@ -426,6 +431,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         signature: 'unarchiveSession(sessionId: SessionId): Promise<void>',
         description: 'Unarchive a Session from the archived Session list.',
         parameters: [{ name: 'sessionId', description: 'Session to unarchive.' }],
+      },
+      {
+        signature: 'deleteSession(sessionId: SessionId): Promise<void>',
+        description: 'Destroy a Session: its running work stops, its live Agent ends, its stored log is destroyed, and every registry reference to it is dropped. Irreversible — confirm with the user before calling.',
+        parameters: [{ name: 'sessionId', description: 'Session to destroy.' }],
+        throws: ['{WorkspaceDeleteSessionError} when the Host refuses or the transport fails.'],
       },
       {
         signature: 'insertSessionBefore( workspaceId: WorkspaceId, sessionId: SessionId, beforeSessionId?: SessionId, ): Promise<WorkspaceView>',

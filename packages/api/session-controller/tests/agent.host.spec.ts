@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Agent, CreateAgentOptions, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { agentPresetProjectionDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
 import SessionStore, { SESSION_FORMAT_VERSION, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionHeader } from '@deepseek-ai/dsh-session'
@@ -261,5 +261,40 @@ describe('ApiSession creation', () => {
     writeFileSync(file, 'not a directory')
     await expect(agents.createSession({ cwd: join(file, 'child'), reusable: () => true }))
       .rejects.toThrow('failed to ensure project directory')
+  })
+})
+
+describe('ApiSessionAgentController disposal', () => {
+  it('releases a published Agent once and ends it again through the Workspace dispose seam', async () => {
+    const { ctx, agents } = await harness()
+    const disposers = new Map<string, ReturnType<typeof vi.fn>>()
+    ctx.agents.setFactory({
+      createAgent: async (ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> => {
+        const session = ctx.sessions.create(options.sessionId, {
+          ...(options.meta === undefined ? {} : { meta: options.meta }),
+        })
+        const agent = {} as Agent
+        Object.assign(agent, { id: session.id, session, status: 'idle', ctx: ownerCtx })
+        await options.setup?.(ownerCtx, agent)
+        await ctx.agents.register(agent)
+        const dispose = vi.fn(async () => {})
+        disposers.set(session.id, dispose)
+        return { agent, dispose }
+      },
+      resume: () => Promise.reject(new Error('disposal tests publish through create')),
+    })
+
+    const created = await agents.createSession({ cwd: '/workspace', reusable: () => true })
+    const seamTarget = await agents.createSession({ cwd: '/workspace', reusable: () => true })
+
+    await expect(agents.release(created.agent.id)).resolves.toBe(true)
+    expect(disposers.get(created.agent.id)).toHaveBeenCalledTimes(1)
+    // The handle is spent: a repeated release tears down nothing.
+    await expect(agents.release(created.agent.id)).resolves.toBe(false)
+
+    // The Workspace delete sequence dispatches this seam; it ends the Agent
+    // the controller published without going through release() directly.
+    await ctx.parallel('workspace/session-dispose', { sessionId: seamTarget.agent.id })
+    expect(disposers.get(seamTarget.agent.id)).toHaveBeenCalledTimes(1)
   })
 })

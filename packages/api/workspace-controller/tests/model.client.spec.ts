@@ -8,6 +8,8 @@ import type {
   WorkspaceCreateRequest,
   WorkspaceCreateValue,
   WorkspaceDeleteRequest,
+  WorkspaceDeleteSessionRequest,
+  WorkspaceDeleteSessionValue,
   WorkspaceDeleteValue,
   WorkspaceFollowFrame,
   WorkspaceInsertBeforeRequest,
@@ -102,6 +104,10 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
     _request: WorkspaceUnpinSessionRequest,
   ) => Promise<RemoteResult<WorkspacePinValue>> = () =>
     Promise.resolve(remoteOk({ pinnedSessionIds: [] }))
+  onDeleteSession: (
+    _request: WorkspaceDeleteSessionRequest,
+  ) => Promise<RemoteResult<WorkspaceDeleteSessionValue>> = () =>
+    Promise.resolve(remoteOk({ deleted: true }))
 
   create(request: WorkspaceCreateRequest): Promise<RemoteResult<WorkspaceCreateValue>> {
     this.record('create', request)
@@ -146,6 +152,11 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
   unpinSession(request: WorkspaceUnpinSessionRequest): Promise<RemoteResult<WorkspacePinValue>> {
     this.record('unpinSession', request)
     return this.onUnpinSession(request)
+  }
+
+  deleteSession(request: WorkspaceDeleteSessionRequest): Promise<RemoteResult<WorkspaceDeleteSessionValue>> {
+    this.record('deleteSession', request)
+    return this.onDeleteSession(request)
   }
 
   follow(_signal?: AbortSignal): RemoteStreamHandle<WorkspaceFollowFrame, never> {
@@ -372,6 +383,15 @@ describe('ClientWorkspaceModel', () => {
     await expect(model.unarchiveSession(sid('fresh'))).resolves.toMatchObject({ ok: true })
     expect(model.getSnapshot().archivedSessionIds).toEqual([])
     expect(remote.calls).toContainEqual({ method: 'unarchiveSession', request: { sessionId: 'fresh' } })
+
+    remote.onDeleteSession = () => Promise.resolve(workspaceError(
+      new RemoteError('session/not-found', 'missing', { sessionId: sid('missing') }),
+    ))
+    await expect(model.deleteSession(sid('missing'))).resolves.toMatchObject({ ok: false })
+    expect(model.getSnapshot().archivedSessionIds).toEqual([])
+    remote.onDeleteSession = () => Promise.resolve(remoteOk({ deleted: true }))
+    await expect(model.deleteSession(sid('fresh'))).resolves.toMatchObject({ ok: true })
+    expect(remote.calls).toContainEqual({ method: 'deleteSession', request: { sessionId: 'fresh' } })
   })
 
   it('keeps the latest unarchive reply when overlapping requests settle out of order', async () => {

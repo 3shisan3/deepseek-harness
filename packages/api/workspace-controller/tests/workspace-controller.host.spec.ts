@@ -62,7 +62,7 @@ async function harness(options: { systemDocuments?: boolean } = {}) {
   const storageDomain = new DomainFacility(ctx, { backend: 'memory', routes: {} })
   ctx.storage.mount('domain', storageDomain)
   ctx.provide('storageDomain', storageDomain)
-  ctx.provide('sessionPersistence', { list: () => Promise.resolve([]) } as never)
+  ctx.provide('sessionPersistence', { list: () => Promise.resolve([]), delete: () => Promise.resolve(true) } as never)
   await ctx.plugin(WorkspaceRegistry)
   const dispose = (): void => {}
   ctx.provide('typert', {
@@ -195,6 +195,11 @@ describe('WorkspaceController commands', () => {
     await expect(controller.unarchiveSession({ sessionId: SessionId('session') }))
       .rejects.toBe(unarchiveFailure)
 
+    const deleteFailure = new Error('delete storage failed')
+    vi.spyOn(ctx.workspaceRegistry, 'deleteSession').mockRejectedValueOnce(deleteFailure)
+    await expect(controller.deleteSession({ sessionId: SessionId('session') }))
+      .rejects.toBe(deleteFailure)
+
     const pinFailure = new Error('pin storage failed')
     vi.spyOn(ctx.workspaceRegistry, 'pinSession').mockRejectedValueOnce(pinFailure)
     await expect(controller.pinSession({ sessionId: SessionId('session') }))
@@ -301,6 +306,10 @@ describe('WorkspaceController commands', () => {
     // Unarchive is idempotent: an id that is not archived is not an error.
     await expect(controller.unarchiveSession({ sessionId: session.id }))
       .resolves.toEqual({ archivedSessionIds: [] })
+    await expect(controller.deleteSession({ sessionId: SessionId('missing') }))
+      .rejects.toMatchObject({ code: 'session/not-found' })
+    await expect(controller.deleteSession({ sessionId: session.id }))
+      .resolves.toEqual({ deleted: true })
   })
 
   it('pins only known unarchived Sessions and unpins idempotently', async () => {

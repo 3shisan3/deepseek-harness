@@ -23,7 +23,7 @@ import pLimit, { type LimitFunction } from 'p-limit'
 import {
   SessionPersistence, SessionPersistenceRevision, SessionFormatUnsupportedError,
   SessionPersistenceCorruptionError,
-  SessionAlreadyExistsError, SessionPersistenceNotFoundError,
+  SessionAlreadyExistsError, SessionAlreadyOwnedError, SessionPersistenceNotFoundError,
   assertStoredId, materializeCreateHeader, sessionFormatVersionRefusal, validateStoredEvents,
   type SessionAccess, type SessionHandle,
   type SessionHandleReadResult,
@@ -312,6 +312,8 @@ class JsonlSessionPersistence extends SessionPersistence {
   private readonly coldLogMemo = new Map<SessionId, StoredLog>()
   /** One joinable decode/migration operation per selected historical Session file revision. */
   private readonly migrationPreparations = new Map<SessionId, MigrationPreparation>()
+  /** Serializes removals of one id, so concurrent deletes report one removal. */
+  private readonly deleteChains = new Map<SessionId, Promise<boolean>>()
 
   constructor(ctx: Context, public config: Config, private readonly tracker: JsonlBackendTracker) {
     super(ctx)
@@ -561,6 +563,51 @@ class JsonlSessionPersistence extends SessionPersistence {
     }
     signal?.throwIfAborted()
     return snapshots
+  }
+
+  /**
+   * Destroy one stored session's artifacts: every format generation under its
+   * session directory, including the current log, migration stages, and the
+   * cross-process write lock. The enclosing project directory is left alone —
+   * other sessions of the same project share it.
+   *
+   * A created-but-unmaterialized session also counts: its creator handle still
+   * owns the identity, so it is refused exactly like a materialized one's
+   * write handle; closing that handle before materialization is what makes the
+   * session never have existed.
+   * @param id - the stored session to destroy.
+   * @returns `true` when a stored session was removed, `false` when no artifact
+   *   held the identity.
+   * @throws {SessionAlreadyOwnedError} when a live write handle still owns the id.
+   */
+  delete(id: SessionId): Promise<boolean> {
+    const previous = this.deleteChains.get(id)
+    const removal = (async (): Promise<boolean> => {
+      // A failed earlier deletion belongs to its own caller; this attempt
+      // re-checks storage instead of inheriting that failure.
+      if (previous !== undefined) await previous.catch(() => undefined)
+      if (this.tracker.hasWriter(id)) throw new SessionAlreadyOwnedError(id)
+      this.coldLogMemo.delete(id)
+      const preparation = this.migrationPreparations.get(id)
+      if (preparation !== undefined) {
+        this.migrationPreparations.delete(id)
+        // The in-flight decode owns no artifact; abandoning it cannot damage the
+        // directory the removal below takes.
+        preparation.controller.abort(new DOMException(
+          `session "${id}": migration preparation cancelled by deletion`, 'AbortError',
+        ))
+      }
+      const selected = await this.findLog(id)
+      if (selected === undefined) return false
+      await rm(dirname(selected.sourcePath), { recursive: true, force: true })
+      return true
+    })()
+    this.deleteChains.set(id, removal)
+    const release = (): void => {
+      if (this.deleteChains.get(id) === removal) this.deleteChains.delete(id)
+    }
+    void removal.then(release, release)
+    return removal
   }
 
   // --- handle-facing storage internals (package-private via the handle class below) ---

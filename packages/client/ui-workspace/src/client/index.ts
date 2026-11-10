@@ -40,8 +40,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 // Type-only: pulls the Session root standard-hook merge.
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import {
-  type ArchiveSessionInjected, type ForkSessionInjected, menuOpenStateFactory, type PinSessionInjected,
+  type ArchiveSessionInjected, type DeleteSessionInjected, type ForkSessionInjected, menuOpenStateFactory, type PinSessionInjected,
   type SessionArchiveConfirmInjected, type SessionArchiveConfirmRequest,
+  type SessionDeleteConfirmInjected, type SessionDeleteConfirmRequest,
   type RenameSessionInjected, type RowToast, type RowToastInjected, type RowToastState, type SessionRenameDialogInjected,
   type WorkspaceActionRequest, type SessionIdInjected, type WorkspaceBrowserInjected, type WorkspacePickerInjected,
 } from './contract/slots.ts'
@@ -50,6 +51,7 @@ import { UiWorkspaceService } from './navigation.ts'
 import { createWorkspaceViewStore } from './stores.ts'
 import { WorkspaceBrowser } from './rows/WorkspaceBrowser.tsx'
 import { ArchiveSessionRowButton, SessionArchiveConfirmDialog } from './session-actions/ArchiveSession.tsx'
+import { DeleteSessionHeaderAction, DeleteSessionRowButton, SessionDeleteConfirmDialog } from './session-actions/DeleteSession.tsx'
 import { derive } from './session-actions/derived.ts'
 import { registerSessionMenus } from './session-actions/context-menus.tsx'
 import { PinSessionRowButton } from './session-actions/PinSession.tsx'
@@ -61,8 +63,10 @@ import { en, ja, es, fr, de, ru, pt, zh, type WorkspaceKey } from './locales.ts'
 
 export type { StartSessionOptions, UiWorkspace } from './navigation.ts'
 export type {
+  DeleteSessionInjected, SessionDeleteConfirmInjected, SessionDeleteConfirmRequest,
   DirectoryFlowOwnerProps, DirectoryFlowSlotName, DirectoryPickingHooks, DirectoryPickingInjected,
-  MenuOpenState, RowToast, SessionRenameTarget, SessionRowOwnerProps, UseMenuOpenState, WorkspaceBrowserInjected,
+  MenuOpenState, RowToast, SessionDeleteConfirmProps, SessionRenameTarget, SessionRowOwnerProps, UseMenuOpenState,
+  WorkspaceBrowserInjected,
   SessionRowScheduleOwnerProps,
   WorkspaceBrowserProps,
   WorkspacePickerInjected, WorkspacePickerProps,
@@ -222,6 +226,23 @@ export function apply(ctx: Context): void {
       notify({ kind: 'stoppedAndArchived', sessionId })
     },
   })
+  const deleteRequest = createSnapshotStore<SessionDeleteConfirmRequest | null>(null)
+  const requestSessionDelete = (sessionId: SessionId): void => {
+    const displayTitle = sessions.list.getSnapshot().byId[sessionId]?.displayTitle ?? sessionId
+    deleteRequest.set({ sessionId, displayTitle })
+  }
+  const deleteInjected = (): DeleteSessionInjected => ({
+    hooks: { archived: archivedSet },
+    requestSessionDelete,
+  })
+  const deleteConfirmInjected = (): SessionDeleteConfirmInjected => ({
+    hooks: { deleteRequest },
+    settleSessionDelete: () => { deleteRequest.set(null) },
+    deleteSession: async (sessionId) => {
+      await uiWorkspace.deleteSession(sessionId)
+      notify({ kind: 'deleted', sessionId })
+    },
+  })
   const forkInjected = (): ForkSessionInjected => ({
     forkSession: (sessionId) => {
       uiWorkspace.forkSession(sessionId, (childId) => {
@@ -340,11 +361,12 @@ export function apply(ctx: Context): void {
     } },
   }, SessionMenu))
   registerSessionMenus(ctx, {
-    ...pinInjected(), ...archiveInjected(), ...renameInjected(), ...forkInjected(), ...sessionIdInjected(),
+    ...pinInjected(), ...archiveInjected(), ...deleteInjected(), ...renameInjected(), ...forkInjected(), ...sessionIdInjected(),
   })
   ctx.slots.inject('sidebar.workspaces.session.row.action', function* () {
     yield ctx.slots.register({ name: 'sidebar.workspaces.session.row.action', id: 'archive', order: 100, locale: NS, inject: archiveInjected }, ArchiveSessionRowButton)
     yield ctx.slots.register({ name: 'sidebar.workspaces.session.row.action', id: 'pin', order: 200, locale: NS, inject: pinInjected }, PinSessionRowButton)
+    yield ctx.slots.register({ name: 'sidebar.workspaces.session.row.action', id: 'delete', order: 300, locale: NS, inject: deleteInjected }, DeleteSessionRowButton)
   })
   // The surfaces the actions raise live in the frame-wide layer: they must
   // outlive the row menu the action sat in.
@@ -356,10 +378,17 @@ export function apply(ctx: Context): void {
       name: 'shell.overlay', id: 'workspace.session-archive', locale: NS, inject: archiveConfirmInjected,
     }, SessionArchiveConfirmDialog)
     yield ctx.slots.register({
+      name: 'shell.overlay', id: 'workspace.session-delete', locale: NS, inject: deleteConfirmInjected,
+    }, SessionDeleteConfirmDialog)
+    yield ctx.slots.register({
       name: 'shell.overlay', id: 'workspace.row-toast', inject: rowToastInjected,
       children: { 'workspace.toast': { kind: 'keyed', scope: 'root' } },
     }, RowActionToast)
   })
+  ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
+    name: 'conversation.session.header.actions', id: 'delete', order: 30, locale: NS,
+    inject: deleteInjected,
+  }, DeleteSessionHeaderAction))
   ctx.slots.inject('conversation.hero.workspace', () => ctx.slots.register(
     {
       name: 'conversation.hero.workspace',

@@ -33,7 +33,7 @@ seam 随产品交付 [JSONL](../session-persistence-jsonl/README.zh.md) 后端�
 
 ### 服务提供什么
 
-挂载后端后，五个服务方法寻址已存储会话：
+挂载后端后，六个服务方法寻址已存储会话：
 
 ```text
 const handle = await ctx.sessionPersistence.create(header)     // store a new session, take write ownership
@@ -41,10 +41,13 @@ const handle = await ctx.sessionPersistence.open(id, 'write')  // claim single-w
 const reader = await ctx.sessionPersistence.open(id, 'read')   // observe without ownership
 const snap = await ctx.sessionPersistence.stat(id)             // header + revision (+ eventCount / sizeBytes) without a log read
 const all = await ctx.sessionPersistence.list()                // one snapshot per visible stored session
+const gone = await ctx.sessionPersistence.delete(id)           // destroy one stored session; false when no stored session held the id
 await ctx.sessionPersistence.flush()                           // backend-wide durability barrier over every active write handle
 ```
 
 服务级 `flush()` 排空每个活跃写句柄已路由的事件并把其会话实体化，效果与各句柄自己的 `flush` 完全相同；失败按会话聚合为一个 `AggregateError` 而不中途放弃清扫，清扫途中被关闭的句柄视同已 flush，因为 close 本身会持久排空。
+
+`delete(id)` 整体销毁一个已存储会话：其实体化的产物与旁边保留的其他格式代。它绝不删除日志的一部分或单个事件；调用方负责周边工作——停止实时活动、移除注册表引用——因为存储无从知道还有谁持有该身份。活跃写句柄让日志保持存活且可被修改，因此调用以 `SessionAlreadyOwnedError` 拒绝；调用方需先关闭该句柄。已创建但未实体化的会话没有可销毁的产物；在实体化前关闭其写句柄即会移除该会话本身。没有任何已存储会话占用的 id 会解析为 `false` 且不写盘，因此该调用是幂等的。完成后该会话不再出现在 `stat`、`list` 与 `open` 中，该 id 也不会被保留以阻止后续 `create`。
 
 每一次日志读写都流经返回的 `SessionHandle`；不存在按 id 寻址的 append 或 load 方法。`handle.read(offset?, length?)` 返回 `{ eventState, events }`：外层 slice 属于调用方，`eventState` 则区分由调用方独占的 `detached` 事件图与可能同时位于后端缓存中的 `shared-frozen` 事件图。该状态由生成方确定，即使切片为空也会保留。两种状态都能直接接管而无需复制；需要可变事件的消费方必须先克隆事件。读取绝不包含撕裂尾部，同一句柄上的重复读取绝不会观察到比先前读取更旧的状态，写句柄也能读到自己成功的 append。`handle.append(events)` 追加一个连续批次，其第一个 `seq` 等于已存储 next-seq；完成时的持久化是尽力而为的——批次被接受、有序，并对同一后端实例上的读取可见，只有完成的 `flush` 才承诺它在崩溃后依然存在（交付的 JSONL 后端恰好会立即持久化每个批次）。`handle.flush()` 是持久性屏障，同时把空的已创建会话实体化，使其可被持久列出。`handle.close()` 幂等且不可取消：读句柄释放本地资源；写句柄完成待处理的持久化并释放写所有权。一旦某次 `append` 或 `flush` 完成，其后在同一后端实例上开始的读取——无论经由任何句柄，还是经由 `stat`/`list`——至少能观察到该前缀。
 

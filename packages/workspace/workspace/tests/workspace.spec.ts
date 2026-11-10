@@ -56,7 +56,8 @@ async function harness(options: HarnessOptions = {}) {
     listed.map(header => ({ header, revision: SessionPersistenceRevision(`rev-${header.id}`) })))
   const open = vi.fn(() => { throw new Error('event bodies must not be opened') })
   const stat = vi.fn(() => { throw new Error('per-session stat must not be needed') })
-  ctx.provide('sessionPersistence', { list, open, stat } as never)
+  const del = vi.fn(async () => true)
+  ctx.provide('sessionPersistence', { list, open, stat, delete: del } as never)
 
   if (options.sessionStore === true) {
     await ctx.plugin(SessionStore)
@@ -83,6 +84,7 @@ async function harness(options: HarnessOptions = {}) {
     list,
     open,
     stat,
+    del,
     setSessions: (headers: SessionHeader[]) => { listed = headers },
   }
 }
@@ -1261,6 +1263,86 @@ describe('registry-global session unarchive', () => {
 
     const second = await harness({ pool, sessions })
     expect(second.registry.archivedSessionIds).toEqual(['kept'])
+  })
+})
+
+describe('registry-global session delete', () => {
+  it('stops, disposes, destroys the log, and drops every registry reference in order', async () => {
+    const dir = await makeDir('delete-home')
+    const result = await harness({
+      sessions: [header('doomed', dir, 100), header('kept', dir, 200)],
+    })
+    const workspace = result.registry.list()[0]!
+    await result.registry.archiveSession(SessionId('doomed'))
+    await result.registry.pinSession(SessionId('kept'))
+    const order: string[] = []
+    result.ctx.on('workspace/session-stop', ({ sessionId }) => { order.push(`stop:${sessionId}`) })
+    result.ctx.on('workspace/session-dispose', ({ sessionId }) => { order.push(`dispose:${sessionId}`) })
+    result.ctx.on('workspace/session-deleted', ({ sessionId }) => { order.push(`deleted:${sessionId}`) })
+
+    await result.registry.deleteSession(SessionId('doomed'))
+
+    expect(order).toEqual(['stop:doomed', 'dispose:doomed', 'deleted:doomed'])
+    expect(result.del).toHaveBeenCalledWith(SessionId('doomed'))
+    expect(result.registry.archivedSessionIds).toEqual([])
+    expect(result.registry.pinnedSessionIds).toEqual(['kept'])
+    // The account slot is gone; the surviving session keeps its position.
+    expect(workspace.sessionIds).toEqual(['kept'])
+    expect(storedState(result.pool).archivedSessionIds).toEqual([])
+    expect(storedState(result.pool).pinnedSessionIds).toEqual(['kept'])
+  })
+
+  it('drops a pinned but unarchived session from the pin set', async () => {
+    const dir = await makeDir('delete-pinned')
+    const result = await harness({ sessions: [header('pinned', dir, 100)] })
+    await result.registry.pinSession(SessionId('pinned'))
+
+    await result.registry.deleteSession(SessionId('pinned'))
+
+    expect(result.registry.pinnedSessionIds).toEqual([])
+    expect(result.registry.list()[0]!.sessionIds).toEqual([])
+  })
+
+  it('reports an unknown session without stopping, disposing, or destroying anything', async () => {
+    const dir = await makeDir('delete-unknown')
+    const result = await harness({ sessions: [header('known', dir, 100)] })
+    const changesBefore = result.changes.length
+
+    await expect(result.registry.deleteSession(SessionId('ghost')))
+      .rejects.toMatchObject({ name: 'WorkspaceUnknownSessionError', sessionId: 'ghost' })
+    expect(result.del).not.toHaveBeenCalled()
+    expect(result.changes.length).toBe(changesBefore)
+  })
+
+  it('keeps the registry clean when the log deletion reports no stored session', async () => {
+    const dir = await makeDir('delete-race')
+    const result = await harness({ sessions: [header('vanished', dir, 100)] })
+    // The live header index still names it, but the backend lost the artifact.
+    result.del.mockResolvedValueOnce(false)
+
+    await expect(result.registry.deleteSession(SessionId('vanished'))).resolves.toBeUndefined()
+    expect(result.registry.archivedSessionIds).toEqual([])
+    expect(result.registry.list()[0]!.sessionIds).toEqual([])
+  })
+
+  it('logs a failing disposal without abandoning the deletion', async () => {
+    const dir = await makeDir('delete-dispose-failure')
+    const result = await harness({ sessions: [header('doomed', dir, 100)] })
+    result.ctx.on('workspace/session-dispose', () => { throw new Error('teardown exploded') })
+
+    await expect(result.registry.deleteSession(SessionId('doomed'))).resolves.toBeUndefined()
+    expect(result.del).toHaveBeenCalledWith(SessionId('doomed'))
+  })
+
+  it('rejects a repeated deletion once the log and the header index are gone', async () => {
+    const dir = await makeDir('delete-repeat')
+    const result = await harness({ sessions: [header('doomed', dir, 100)] })
+    result.del.mockImplementation(async () => { result.setSessions([]); return true })
+
+    await result.registry.deleteSession(SessionId('doomed'))
+    await expect(result.registry.deleteSession(SessionId('doomed')))
+      .rejects.toMatchObject({ name: 'WorkspaceUnknownSessionError', sessionId: 'doomed' })
+    expect(result.del).toHaveBeenCalledTimes(1)
   })
 })
 

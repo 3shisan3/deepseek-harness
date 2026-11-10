@@ -373,6 +373,15 @@ Host service backing the generated `ctx.remote.workspace` namespace.
 @Remote('unarchiveSession') unarchiveSession(request: WorkspaceUnarchiveSessionRequest): Promise<WorkspaceArchiveValue>
 
 /**
+ * Destroy one Session: its running work stops, its live Agent ends, its
+ * stored log is destroyed, and every registry reference to it is dropped.
+ * The action is irreversible, so Clients confirm with the user first.
+ * @param request - Session identity to destroy.
+ * @returns deletion confirmation.
+ */
+@Remote('deleteSession') deleteSession(request: WorkspaceDeleteSessionRequest): Promise<WorkspaceDeleteSessionValue>
+
+/**
  * Surface one known unarchived Session ahead of unpinned Sessions.
  * @param request - Session identity to pin.
  * @returns the complete resulting pin set, most recently pinned first.
@@ -580,6 +589,23 @@ pinSession(sessionId: SessionId): Promise<void>
 unpinSession(sessionId: SessionId): Promise<void>
 
 /**
+ * Destroy one session and every registry reference to it. The session must
+ * exist (live or in session persistence). The sequence is load-bearing:
+ * the `workspace/session-stop` providers end the session's open turns
+ * regularly first, the `workspace/session-dispose` providers then close the
+ * live Agent's durable write handle, and the stored log is destroyed only
+ * once no writer remains. The log is destroyed before the registry writes
+ * its own references: a failed reference write leaves rows naming a missing
+ * log, which the membership projection filters out, while the reverse order
+ * would leave an orphan log no surface names.
+ *
+ * Nothing survives: there is no archive set to restore from and no undo.
+ * @param sessionId - The session to destroy.
+ * @returns resolution after the log is destroyed and the registry is clean.
+ */
+deleteSession(sessionId: SessionId): Promise<void>
+
+/**
  * Resolve by canonical directory path without creating or mutating a
  * workspace. A missing path rejects during `realpath`; an existing unowned
  * directory returns `undefined`.
@@ -615,6 +641,51 @@ Ask the composed providers what still runs for a session before it is archived. 
  * @mode waterfall
  */
 'workspace/session-activity'( request: SessionActivityRequest, next: () => Promise<readonly SessionActivity[]>, ): Promise<readonly SessionActivity[]>
+```
+
+Source: [`packages/workspace/workspace/src/index.ts`](../../packages/workspace/workspace/src/index.ts)
+
+<a id="workspacesession-deleted--emit"></a>
+
+#### `workspace/session-deleted` — emit
+
+A session was destroyed and every registry reference to it is gone. The stored log is already deleted when this dispatches, so a consumer can no longer read the session. The API Session Controller relays this event as a Client list removal; derived indexes reconcile against the persistence listing at their next stable observation. There is no undo.
+
+```ts cordis-catalog
+/**
+ * A session was destroyed and every registry reference to it is gone. The
+ * stored log is already deleted when this dispatches, so a consumer can no
+ * longer read the session. The API Session Controller relays this event as
+ * a Client list removal; derived indexes reconcile against the persistence
+ * listing at their next stable observation. There is no undo.
+ * @param request - the destroyed session.
+ * @mode emit
+ */
+'workspace/session-deleted'(request: SessionActivityRequest): void
+```
+
+Source: [`packages/workspace/workspace/src/index.ts`](../../packages/workspace/workspace/src/index.ts)
+
+<a id="workspacesession-dispose--parallel"></a>
+
+#### `workspace/session-dispose` — parallel
+
+End the live Session's Agent because the caller is destroying the Session. Each owner that holds the Agent's teardown handle disposes it — stopping the loop, draining and closing the durable write handle, and detaching the Session from the store — and AWAITS that disposal, so the log deletion that follows finds no active writer; a provider that owns no live Agent does nothing. A failing disposal is logged by the registry and does not stop the deletion, though it may surface again when the log is deleted under a still-open writer.
+
+```ts cordis-catalog
+/**
+ * End the live Session's Agent because the caller is destroying the
+ * Session. Each owner that holds the Agent's teardown handle disposes it —
+ * stopping the loop, draining and closing the durable write handle, and
+ * detaching the Session from the store — and AWAITS that disposal, so the
+ * log deletion that follows finds no active writer; a provider that owns no
+ * live Agent does nothing. A failing disposal is logged by the registry and
+ * does not stop the deletion, though it may surface again when the log is
+ * deleted under a still-open writer.
+ * @param request - the session being destroyed.
+ * @mode parallel
+ */
+'workspace/session-dispose'(request: SessionActivityRequest): Promise<void> | void
 ```
 
 Source: [`packages/workspace/workspace/src/index.ts`](../../packages/workspace/workspace/src/index.ts)

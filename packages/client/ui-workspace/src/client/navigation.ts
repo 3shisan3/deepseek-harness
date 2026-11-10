@@ -101,6 +101,14 @@ export interface UiWorkspace {
    */
   unarchiveSession(sessionId: SessionId): Promise<void>
   /**
+   * Destroy a Session: the Host stops its running work, ends its live Agent,
+   * deletes its stored log, and drops every registry reference to it. There is
+   * no undo. A Session that is the current selection clears into the New
+   * Session view state.
+   * @param sessionId - Session to destroy.
+   */
+  deleteSession(sessionId: SessionId): Promise<void>
+  /**
    * Pin a Session on the Host, then lead it in its accounts' saved orders
    * (its Workspace group or Ungrouped, and the flat list). The order write
    * reads the memberships current at completion, so reorders that landed
@@ -386,6 +394,11 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
   async unarchiveSession(sessionId: SessionId): Promise<void> {
     await this.workspaces.unarchiveSession(sessionId)
+  }
+
+  async deleteSession(sessionId: SessionId): Promise<void> {
+    await this.workspaces.deleteSession(sessionId)
+    if (this.mainReference?.sessionId === sessionId) this.clearMain()
   }
 
   async pinSession(sessionId: SessionId): Promise<void> {

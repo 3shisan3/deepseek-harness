@@ -92,6 +92,22 @@ describe('SessionController facade', () => {
       .resolves.toMatchObject({ reason: 'idle' })
   })
 
+  it('relays a destroyed Session to the Client list even without a live disposal', async () => {
+    const ctx = new Context()
+    onTestFinished(() => ctx.fiber.dispose())
+    await mountAgentLoopTestDependencies(ctx)
+    await mountAgentLoopTestHarness(ctx)
+    const gateway: Partial<TypertGatewayService> = { getPendingRemoteEvents: () => [] }
+    ctx.provide('typertGateway', gateway as TypertGatewayService)
+    await createSessionTestController(ctx, defaults)
+    const removed = vi.fn()
+    ctx.on('api-session/removed', removed)
+    // A cold Session never emits `session/disposed`; the registry's deletion
+    // signal is what removes its row.
+    ctx.emit('workspace/session-deleted', { sessionId: SessionId('cold-deleted') })
+    expect(removed).toHaveBeenCalledWith('cold-deleted')
+  })
+
   it('owns Host service methods and publishes Agent lifecycle projections', async () => {
     const ctx = new Context()
     onTestFinished(() => ctx.fiber.dispose())

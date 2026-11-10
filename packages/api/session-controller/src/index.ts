@@ -16,6 +16,7 @@ import { Remote, RemoteError, TypertRemoteService, principalOf, type TypertResou
 import { canonicalClientTimeZone } from '@deepseek-ai/dsh-util-time'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 import type {} from '@deepseek-ai/dsh-api-remote-access'
+import type {} from '@deepseek-ai/dsh-workspace'
 import {
   ApiSessionAgentController,
   type ApiSessionAgentResult,
@@ -226,6 +227,12 @@ export class SessionController extends TypertRemoteService {
     })
     ctx.on('session/disposed', (session) => {
       ctx.emit('api-session/removed', session.id)
+    })
+    // A destroyed Session is gone from persistence as well as from the live
+    // registry, so a cold one never emits `session/disposed`. The registry's
+    // delete sequence reports it here.
+    ctx.on('workspace/session-deleted', ({ sessionId }) => {
+      ctx.emit('api-session/removed', sessionId)
     })
     const publishAgentAvailability = ({ agent }: { agent: Agent }): undefined => {
       if (ctx.sessions.get(agent.id) === agent.session) {

@@ -2883,7 +2883,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
   {
     key: 'sessionPersistence',
     summary: 'Durable append-only session storage addressed through per-session handles.',
-    description: 'Durable append-only session storage addressed through per-session handles.\n\nStorage semantics shared by every backend: events are contiguous from seq 0 and never rewritten; a torn physical tail is never returned to a reader and is truncated by the write path before its first append; reads validate current-format records only and refuse unknown vocabulary fail-closed. `append` persists best-effort; `flush` — per handle or service-wide — is the durability barrier.\n\nVisibility: a created session is observable through `stat`/`list`/`open` in this process from the moment `create` resolves, even while a backend defers physical materialization (a pure optimization); other processes see the session only once it materializes, and a session that never materialized before a crash never existed. `SessionHandle.flush` forces materialization.\n\nFreshness: once an `append` or `flush` resolves, reads started afterwards on this backend instance observe at least that prefix.',
+    description: 'Durable append-only session storage addressed through per-session handles.\n\nStorage semantics shared by every backend: events are contiguous from seq 0 and never rewritten; a torn physical tail is never returned to a reader and is truncated by the write path before its first append; reads validate current-format records only and refuse unknown vocabulary fail-closed. `append` persists best-effort; `flush` — per handle or service-wide — is the durability barrier.\n\nVisibility: a created session is observable through `stat`/`list`/`open` in this process from the moment `create` resolves, even while a backend defers physical materialization (a pure optimization); other processes see the session only once it materializes, and a session that never materialized before a crash never existed. `SessionHandle.flush` forces materialization.\n\nRemoval: `delete` destroys one stored session whole — never part of a log, never an event. A deleted session is absent from `stat`/`list`/`open` immediately, and the identity is not reserved against a later `create`.\n\nFreshness: once an `append` or `flush` resolves, reads started afterwards on this backend instance observe at least that prefix.',
     methods: [
       {
         signature: 'readonly identity: symbol = Symbol(\'sessionPersistence\')',
@@ -2922,6 +2922,13 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'List every stored session visible to this process, in no promised order.',
         parameters: [{ name: 'options', description: 'optional cancellation.' }],
         returns: 'one snapshot per stored session.',
+      },
+      {
+        signature: 'abstract delete(id: SessionId): Promise<boolean>',
+        description: 'Destroy one stored session: its materialized artifact and every other format generation kept beside it. Storage does not know who else holds the identity, so the caller owns stopping live work and removing registry references; after resolution the session is gone and `stat` reports `undefined`.\n\nA created-but-unmaterialized session has no artifact: a live write handle refuses the call, and a backend that keeps an in-process entry releases it when that handle closes. Idempotent: an identity no stored session occupies resolves without writing. Refusal is a definite miss\'s opposite — an active write handle keeps the log alive and mutating, so deleting under one would leave the handle appending to a destroyed artifact; close it first.',
+        parameters: [{ name: 'id', description: 'the stored session to destroy.' }],
+        returns: '`true` when a stored session was removed, `false` when none held the identity.',
+        throws: ['{SessionAlreadyOwnedError} when a live write handle still owns the id.'],
       },
     ],
   },
@@ -4558,6 +4565,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the complete resulting archive set.',
       },
       {
+        signature: '@Remote(\'deleteSession\') deleteSession(request: WorkspaceDeleteSessionRequest): Promise<WorkspaceDeleteSessionValue>',
+        description: 'Destroy one Session: its running work stops, its live Agent ends, its stored log is destroyed, and every registry reference to it is dropped. The action is irreversible, so Clients confirm with the user first.',
+        parameters: [{ name: 'request', description: 'Session identity to destroy.' }],
+        returns: 'deletion confirmation.',
+      },
+      {
         signature: '@Remote(\'pinSession\') pinSession(request: WorkspacePinSessionRequest): Promise<WorkspacePinValue>',
         description: 'Surface one known unarchived Session ahead of unpinned Sessions.',
         parameters: [{ name: 'request', description: 'Session identity to pin.' }],
@@ -4679,6 +4692,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Unpin one session durably by dropping it from the registry-global pin set. Unpinning runs no session-existence check because removing an id cannot introduce an unknown one, so an entry whose session is gone still resolves. An id that is not pinned resolves without writing.',
         parameters: [{ name: 'sessionId', description: 'The session to unpin.' }],
         returns: 'resolution after durability.',
+      },
+      {
+        signature: 'deleteSession(sessionId: SessionId): Promise<void>',
+        description: 'Destroy one session and every registry reference to it. The session must exist (live or in session persistence). The sequence is load-bearing: the `workspace/session-stop` providers end the session\'s open turns regularly first, the `workspace/session-dispose` providers then close the live Agent\'s durable write handle, and the stored log is destroyed only once no writer remains. The log is destroyed before the registry writes its own references: a failed reference write leaves rows naming a missing log, which the membership projection filters out, while the reverse order would leave an orphan log no surface names.\n\nNothing survives: there is no archive set to restore from and no undo.',
+        parameters: [{ name: 'sessionId', description: 'The session to destroy.' }],
+        returns: 'resolution after the log is destroyed and the registry is clean.',
       },
       {
         signature: 'async resolveByPath(path: string): Promise<Workspace | undefined>',
@@ -4843,8 +4862,8 @@ export const EVENT_API: readonly EventApiEntry[] = [
     name: 'api-session/removed',
     mode: 'emit',
     signature: '\'api-session/removed\'(sessionId: SessionId): void',
-    summary: 'A Session left the live Host registry.',
-    description: 'A Session left the live Host registry.',
+    summary: 'A Session left the Host\'s listed corpus: it was disposed from the live registry, or destroyed outright.',
+    description: 'A Session left the Host\'s listed corpus: it was disposed from the live registry, or destroyed outright. The row is gone and never returns under the same identity.',
     parameters: [{ name: 'sessionId', description: 'removed Session identity.' }],
   },
   {
@@ -5422,6 +5441,22 @@ export const EVENT_API: readonly EventApiEntry[] = [
     summary: 'Ask the composed providers what still runs for a session before it is archived.',
     description: 'Ask the composed providers what still runs for a session before it is archived. A listener prepends its own SessionActivity entries to the result of `next()`; the registry\'s innermost callback returns an empty list, so a composition without providers archives freely. Any non-empty result refuses the archive without a write.',
     parameters: [{ name: 'request', description: 'the session about to be archived.' }, { name: 'next', description: 'delegate to the remaining providers.' }],
+  },
+  {
+    name: 'workspace/session-deleted',
+    mode: 'emit',
+    signature: '\'workspace/session-deleted\'(request: SessionActivityRequest): void',
+    summary: 'A session was destroyed and every registry reference to it is gone.',
+    description: 'A session was destroyed and every registry reference to it is gone. The stored log is already deleted when this dispatches, so a consumer can no longer read the session. The API Session Controller relays this event as a Client list removal; derived indexes reconcile against the persistence listing at their next stable observation. There is no undo.',
+    parameters: [{ name: 'request', description: 'the destroyed session.' }],
+  },
+  {
+    name: 'workspace/session-dispose',
+    mode: 'parallel',
+    signature: '\'workspace/session-dispose\'(request: SessionActivityRequest): Promise<void> | void',
+    summary: 'End the live Session\'s Agent because the caller is destroying the Session.',
+    description: 'End the live Session\'s Agent because the caller is destroying the Session. Each owner that holds the Agent\'s teardown handle disposes it — stopping the loop, draining and closing the durable write handle, and detaching the Session from the store — and AWAITS that disposal, so the log deletion that follows finds no active writer; a provider that owns no live Agent does nothing. A failing disposal is logged by the registry and does not stop the deletion, though it may surface again when the log is deleted under a still-open writer.',
+    parameters: [{ name: 'request', description: 'the session being destroyed.' }],
   },
   {
     name: 'workspace/session-stop',
@@ -10206,6 +10241,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'WorkspaceDeleteRequest',
     declaration: 'export interface WorkspaceDeleteRequest {\n    readonly workspaceId: WorkspaceId;\n}',
+  },
+  {
+    name: 'WorkspaceDeleteSessionRequest',
+    declaration: 'export interface WorkspaceDeleteSessionRequest {\n    readonly sessionId: SessionId;\n}',
+  },
+  {
+    name: 'WorkspaceDeleteSessionValue',
+    declaration: 'export interface WorkspaceDeleteSessionValue {\n    readonly deleted: true;\n}',
   },
   {
     name: 'WorkspaceDeleteValue',

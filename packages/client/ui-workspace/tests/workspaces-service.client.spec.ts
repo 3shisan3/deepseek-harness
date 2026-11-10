@@ -194,6 +194,18 @@ class FakeWorkspaces implements IWorkspaces {
     }))
   }
 
+  onDeleteSession: IWorkspaces['deleteSession'] = async (sessionId) => {
+    this.list.update(state => ({
+      ...state,
+      archivedSessionIds: state.archivedSessionIds.filter(id => id !== sessionId),
+      pinnedSessionIds: state.pinnedSessionIds.filter(id => id !== sessionId),
+      items: state.items.map(item => ({
+        ...item,
+        sessionIds: item.sessionIds.filter(id => id !== sessionId),
+      })),
+    }))
+  }
+
   declare readonly create: IWorkspaces['create']
   declare readonly rename: IWorkspaces['rename']
   declare readonly delete: IWorkspaces['delete']
@@ -220,6 +232,10 @@ class FakeWorkspaces implements IWorkspaces {
   unarchiveSession(sessionId: SessionId): Promise<void> {
     this.unarchiveCalls.push(sessionId)
     return this.onUnarchive(sessionId)
+  }
+
+  deleteSession(sessionId: SessionId): Promise<void> {
+    return this.onDeleteSession(sessionId)
   }
 
   pinSession(sessionId: SessionId): Promise<void> {
@@ -1523,6 +1539,26 @@ describe('UiWorkspaceService', () => {
     b.workspaces.onArchive = () => Promise.reject(new Error('archive rejected'))
     await expect(b.uiWorkspace.archiveSession(idle)).rejects.toThrow('archive rejected')
     expect(b.workspaces.archiveCalls).toEqual([idle, idle])
+  })
+
+  it('forwards delete commands and clears a selected Session it destroys', async () => {
+    const b = bench()
+    b.workspaces.onDeleteSession = async () => {}
+    b.uiWorkspace.openSession(sid('current'))
+
+    await b.uiWorkspace.deleteSession(sid('current'))
+
+    expect(b.sessions.retained[0]!.release).toHaveBeenCalledOnce()
+    expect(b.selectPanel).toHaveBeenCalledTimes(2)
+
+    // A Session that is not the selection only leaves the Host's references.
+    b.workspaces.onDeleteSession = async () => {}
+    await b.uiWorkspace.deleteSession(sid('other'))
+    expect(b.sessions.retained[0]!.release).toHaveBeenCalledOnce()
+    expect(b.selectPanel).toHaveBeenCalledTimes(2)
+
+    b.workspaces.onDeleteSession = () => Promise.reject(new Error('delete rejected'))
+    await expect(b.uiWorkspace.deleteSession(sid('current'))).rejects.toThrow('delete rejected')
   })
 
   it('forwards unarchive commands and preserves failures', async () => {

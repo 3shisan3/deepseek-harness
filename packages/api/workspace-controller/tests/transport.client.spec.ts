@@ -16,6 +16,7 @@ import {
   WorkspaceArchiveError,
   WorkspaceController,
   WorkspaceCreateError,
+  WorkspaceDeleteSessionError,
   type WorkspaceFollowSink,
 } from '../src/client/index.ts'
 import type { WorkspaceFollowFrame, WorkspaceId } from '../src/types.ts'
@@ -373,6 +374,7 @@ describe('WorkspaceController', () => {
     await expect(controller.unarchiveSession(sid('session'))).resolves.toBeUndefined()
     await expect(controller.pinSession(sid('session'))).resolves.toBeUndefined()
     await expect(controller.unpinSession(sid('session'))).resolves.toBeUndefined()
+    await expect(controller.deleteSession(sid('session'))).resolves.toBeUndefined()
     await expect(controller.delete(wid('one'))).resolves.toBeUndefined()
     // Each command crosses the wire as one positional request object.
     expect(mock.log.requests('workspace/create')).toEqual([{ path: '/work/created' }])
@@ -384,6 +386,7 @@ describe('WorkspaceController', () => {
     expect(mock.log.requests('workspace/unarchiveSession')).toEqual([{ sessionId: 'session' }])
     expect(mock.log.requests('workspace/pinSession')).toEqual([{ sessionId: 'session' }])
     expect(mock.log.requests('workspace/unpinSession')).toEqual([{ sessionId: 'session' }])
+    expect(mock.log.requests('workspace/deleteSession')).toEqual([{ sessionId: 'session' }])
     expect(mock.log.requests('workspace/delete')).toEqual([{ workspaceId: 'one' }])
   })
 
@@ -411,6 +414,10 @@ describe('WorkspaceController', () => {
     const archiveMissing = controller.archiveSession(sid('session'))
     await expect(archiveMissing).rejects.toBeInstanceOf(WorkspaceArchiveError)
     await expect(archiveMissing).rejects.toThrow('workspace session archive failed: session/not-found: missing session')
+    mock.remote.workspace.deleteSession.mockResolvedValueOnce(err(missingSession))
+    const deleteMissing = controller.deleteSession(sid('session'))
+    await expect(deleteMissing).rejects.toBeInstanceOf(WorkspaceDeleteSessionError)
+    await expect(deleteMissing).rejects.toThrow('workspace session delete failed: session/not-found: missing session')
     // The active-session refusal keeps its structured details so a surface
     // can name what still runs.
     const active = new RemoteError('workspace/session-active', 'session is active', {

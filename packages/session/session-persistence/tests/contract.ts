@@ -610,5 +610,56 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
         await dispose()
       }
     })
+
+    it('delete destroys a materialized session, then resolves false as an idempotent miss', async () => {
+      const { persistence, dispose } = await make()
+      try {
+        const m = meta('delete', '/work')
+        const writer = await persistence.create(m)
+        await writer.append(oneTurnLog())
+        await writer.close()
+
+        expect(await persistence.delete(m.id)).toBe(true)
+        expect(await persistence.stat(m.id)).toBeUndefined()
+        expect((await persistence.list()).some(snapshot => snapshot.header.id === m.id)).toBe(false)
+        // A second delete is a definite miss, never an error.
+        expect(await persistence.delete(m.id)).toBe(false)
+      } finally {
+        await dispose()
+      }
+    })
+
+    it('delete refuses under a live write handle, which owns the log it would destroy', async () => {
+      const { persistence, dispose } = await make()
+      try {
+        const m = meta('delete-busy', '/work')
+        const writer = await persistence.create(m)
+        await expect(persistence.delete(m.id)).rejects.toMatchObject({ name: 'SessionAlreadyOwnedError' })
+        // The refused delete left the session intact.
+        expect(await persistence.stat(m.id)).toBeDefined()
+        await writer.close()
+        // Closing a never-materialized creator erases the session, so the id is
+        // a miss rather than a deletable artifact.
+        expect(await persistence.delete(m.id)).toBe(false)
+      } finally {
+        await dispose()
+      }
+    })
+
+    it('reports one removal when two deletions race for one stored session', async () => {
+      const { persistence, dispose } = await make()
+      try {
+        const m = meta('delete-concurrent', '/work')
+        const writer = await persistence.create(m)
+        await writer.append(oneTurnLog())
+        await writer.close()
+
+        const results = await Promise.all([persistence.delete(m.id), persistence.delete(m.id)])
+        expect(results.filter(removed => removed)).toHaveLength(1)
+        expect(await persistence.stat(m.id)).toBeUndefined()
+      } finally {
+        await dispose()
+      }
+    })
   })
 }

@@ -18,6 +18,8 @@ import type {
   WorkspaceCreateRequest,
   WorkspaceCreateValue,
   WorkspaceDeleteRequest,
+  WorkspaceDeleteSessionRequest,
+  WorkspaceDeleteSessionValue,
   WorkspaceDeleteValue,
   WorkspaceInsertBeforeRequest,
   WorkspaceInsertSessionBeforeRequest,
@@ -192,6 +194,25 @@ export class WorkspaceCommands {
   async unarchiveSession(request: WorkspaceUnarchiveSessionRequest): Promise<WorkspaceArchiveValue> {
     await this.ctx.workspaceRegistry.unarchiveSession(request.sessionId)
     return { archivedSessionIds: [...this.ctx.workspaceRegistry.archivedSessionIds] }
+  }
+
+  /**
+   * Destroy one Session: the registry stops its running work, ends its live
+   * Agent, destroys its stored log, and drops every registry reference to it.
+   * Nothing survives, so a Client confirms with the user before submitting.
+   * @param request - Session identity to destroy.
+   * @returns deletion confirmation.
+   */
+  async deleteSession(request: WorkspaceDeleteSessionRequest): Promise<WorkspaceDeleteSessionValue> {
+    try {
+      await this.ctx.workspaceRegistry.deleteSession(request.sessionId)
+    } catch (error) {
+      if (error instanceof WorkspaceUnknownSessionError) {
+        throw new RemoteError('session/not-found', error.message, { sessionId: request.sessionId }, { cause: error })
+      }
+      throw error
+    }
+    return { deleted: true }
   }
 
   /**

@@ -33,7 +33,7 @@ The seam ships the [JSONL](../session-persistence-jsonl/README.md) backend: one 
 
 ### What the service provides
 
-With a backend mounted, five service methods address stored sessions:
+With a backend mounted, six service methods address stored sessions:
 
 ```text
 const handle = await ctx.sessionPersistence.create(header)     // store a new session, take write ownership
@@ -41,10 +41,13 @@ const handle = await ctx.sessionPersistence.open(id, 'write')  // claim single-w
 const reader = await ctx.sessionPersistence.open(id, 'read')   // observe without ownership
 const snap = await ctx.sessionPersistence.stat(id)             // header + revision (+ eventCount / sizeBytes) without a log read
 const all = await ctx.sessionPersistence.list()                // one snapshot per visible stored session
+const gone = await ctx.sessionPersistence.delete(id)           // destroy one stored session; false when no stored session held the id
 await ctx.sessionPersistence.flush()                           // backend-wide durability barrier over every active write handle
 ```
 
 Service-level `flush()` drains every active write handle's routed events and materializes its session, exactly as each handle's own `flush` would; failures aggregate per session as an `AggregateError` without abandoning the sweep, and a handle closed mid-sweep counts as flushed because close itself drains durably.
+
+`delete(id)` destroys one stored session whole: its materialized artifact and any other format generation kept beside it. It never removes part of a log or a single event, and the caller owns the surrounding work — stopping live activity and dropping registry references — because storage cannot know who else holds the identity. An active write handle keeps the log alive and mutating, so the call rejects with `SessionAlreadyOwnedError`; the caller closes that handle first. A created-but-unmaterialized session has no artifact to destroy; closing its writer before materialization removes the session itself. An id no stored session occupies resolves `false` without writing, so the call is idempotent. After resolution the session is absent from `stat`, `list`, and `open`, and the id is not reserved against a later `create`.
 
 Every log read and write flows through the returned `SessionHandle`; there are no id-addressed append or load methods. `handle.read(offset?, length?)` returns `{ eventState, events }`: the outer slice belongs to the caller, while `eventState` distinguishes an exclusively `detached` event graph from a `shared-frozen` graph that may also reside in a backend cache. The producer establishes this state and slices preserve it even when empty. Both states are safe to adopt without copying; a consumer that needs mutable events clones them first. Reads never include a torn tail, repeated reads on one handle never observe an older state than a prior read, and a write handle reads its own successful appends. `handle.append(events)` appends a contiguous batch whose first `seq` equals the stored next-seq; persistence is best-effort on resolution — the batch is accepted, ordered, and visible to reads on this backend instance, and only a resolved `flush` promises it survives a crash (the shipped JSONL backend happens to persist each batch immediately). `handle.flush()` is the durability barrier and also materializes an empty created session so it becomes durably listable. `handle.close()` is idempotent and uncancellable: a read handle frees local resources; a write handle completes pending durability and releases write ownership. Once an `append` or `flush` resolves, reads started afterwards on the same backend instance — on any handle, or through `stat`/`list` — observe at least that prefix.
 

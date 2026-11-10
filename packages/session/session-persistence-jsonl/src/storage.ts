@@ -458,6 +458,16 @@ export class JsonlBackendTracker {
   }
 
   /**
+   * Whether an active write handle, or a claim taken while one is being
+   * constructed, holds this session's write ownership.
+   * @param id - the session to test.
+   * @returns true while the ownership claim stands.
+   */
+  hasWriter(id: SessionId): boolean {
+    return this.writers.has(id)
+  }
+
+  /**
    * Iterate the pending sessions for listing.
    * @returns the pending entries, keyed by session id.
    */

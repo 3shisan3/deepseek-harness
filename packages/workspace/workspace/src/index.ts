@@ -40,16 +40,16 @@ export function WorkspaceId(id: string): WorkspaceId {
 }
 
 /**
- * An archiveSession or pinSession request named a session neither live nor in
- * session persistence — a definite miss only; storage faults propagate as
- * themselves.
+ * A deleteSession, archiveSession, or pinSession request named a session
+ * neither live nor in session persistence — a definite miss only; storage
+ * faults propagate as themselves.
  */
 export class WorkspaceUnknownSessionError extends Error {
   /**
    * @param sessionId - The unknown session id.
    * @param verb - The registry operation that named the session.
    */
-  constructor(readonly sessionId: SessionId, verb: 'archive' | 'pin') {
+  constructor(readonly sessionId: SessionId, verb: 'archive' | 'pin' | 'delete') {
     super(`cannot ${verb} session '${sessionId}': live sessions and session persistence hold no such session`)
     this.name = 'WorkspaceUnknownSessionError'
   }
@@ -145,6 +145,29 @@ declare module '@deepseek-ai/cordis' {
      * @mode parallel
      */
     'workspace/session-stop'(request: SessionActivityRequest): Promise<void> | void
+    /**
+     * End the live Session's Agent because the caller is destroying the
+     * Session. Each owner that holds the Agent's teardown handle disposes it —
+     * stopping the loop, draining and closing the durable write handle, and
+     * detaching the Session from the store — and AWAITS that disposal, so the
+     * log deletion that follows finds no active writer; a provider that owns no
+     * live Agent does nothing. A failing disposal is logged by the registry and
+     * does not stop the deletion, though it may surface again when the log is
+     * deleted under a still-open writer.
+     * @param request - the session being destroyed.
+     * @mode parallel
+     */
+    'workspace/session-dispose'(request: SessionActivityRequest): Promise<void> | void
+    /**
+     * A session was destroyed and every registry reference to it is gone. The
+     * stored log is already deleted when this dispatches, so a consumer can no
+     * longer read the session. The API Session Controller relays this event as
+     * a Client list removal; derived indexes reconcile against the persistence
+     * listing at their next stable observation. There is no undo.
+     * @param request - the destroyed session.
+     * @mode emit
+     */
+    'workspace/session-deleted'(request: SessionActivityRequest): void
   }
 }
 
@@ -478,7 +501,101 @@ export class WorkspaceRegistry extends Service {
     return this.headers.has(id)
   }
 
-  /** Request every provider's stop; a failing provider is logged, never a reason to keep the session visible. */
+  /**
+   * Destroy one session and every registry reference to it. The session must
+   * exist (live or in session persistence). The sequence is load-bearing:
+   * the `workspace/session-stop` providers end the session's open turns
+   * regularly first, the `workspace/session-dispose` providers then close the
+   * live Agent's durable write handle, and the stored log is destroyed only
+   * once no writer remains. The log is destroyed before the registry writes
+   * its own references: a failed reference write leaves rows naming a missing
+   * log, which the membership projection filters out, while the reverse order
+   * would leave an orphan log no surface names.
+   *
+   * Nothing survives: there is no archive set to restore from and no undo.
+   * @param sessionId - The session to destroy.
+   * @returns resolution after the log is destroyed and the registry is clean.
+   */
+  deleteSession(sessionId: SessionId): Promise<void> {
+    return this.enqueueOperation(async () => {
+      // The chain slot serializes against every other registry write, so this
+      // check-then-write pair cannot interleave with a concurrent archive.
+      if (!(await this.sessionKnown(sessionId))) {
+        throw new WorkspaceUnknownSessionError(sessionId, 'delete')
+      }
+      await this.stopSessionActivity(sessionId)
+      await this.disposeSessionActivity(sessionId)
+      await this.ctx.sessionPersistence.delete(sessionId)
+      await this.forgetSession(sessionId)
+      this.ctx.emit('workspace/session-deleted', { sessionId })
+    })
+  }
+
+  /**
+   * Drop every registry reference to a session whose stored log is already
+   * gone: each Workspace's manual account order, the registry-global archive
+   * set, the registry-global pin set, and the in-memory header index. Workspace
+   * records keep their rows; only the session's slot in them goes away. An id
+   * the registry already forgot resolves without writing.
+   */
+  private async forgetSession(sessionId: SessionId): Promise<void> {
+    // The index goes first: a later storage failure must not leave `sessionKnown`
+    // claiming a session whose log is already gone.
+    this.headers.delete(sessionId)
+    this.sessionPaths.delete(sessionId)
+    this.missingSessionPaths.delete(sessionId)
+    this.invalidSessionPaths.delete(sessionId)
+    // `detachSession` is idempotent by contract: a Workspace that does not
+    // account the session aborts its own chain slot without a write, so this
+    // needs no membership pre-check.
+    for (const entity of this.entities.values()) await entity.detachSession(sessionId)
+    const state = this.requireState()
+    const archived = state.archivedSessionIds.includes(sessionId)
+    const pinned = state.pinnedSessionIds.includes(sessionId)
+    if (!archived && !pinned) return
+    await this.setState({
+      ...state,
+      archivedSessionIds: archived ? state.archivedSessionIds.filter(id => id !== sessionId) : state.archivedSessionIds,
+      pinnedSessionIds: pinned ? state.pinnedSessionIds.filter(id => id !== sessionId) : state.pinnedSessionIds,
+    })
+  }
+
+  /**
+   * Ask every provider to end the live Agent it owns for a session, and await
+   * that teardown: the durable write handle a session's writer owns is what
+   * refuses the log deletion, so it must close first. Each provider disposes
+   * the Agent it published through its own teardown path — the same one its
+   * owner-fiber unload uses — so the session log ends every open turn
+   * regularly and the Session leaves the store with its paired disposal edge.
+   * A failing provider is logged rather than propagated: the deletion decides
+   * what its own outcome is, and the log deletion names the writer that
+   * refused it if the failure left one open.
+   * @param sessionId - The session whose live Agent is ended.
+   * @returns resolution once every provider was asked and settled.
+   */
+  private async disposeSessionActivity(sessionId: SessionId): Promise<void> {
+    try {
+      await this.ctx.parallel('workspace/session-dispose', { sessionId })
+    } catch (error: unknown) {
+      // ctx.parallel settles every listener and rejects with one AggregateError.
+      /* v8 ignore next -- the plain arm guards a rethrowing dispatcher. */
+      const failures = error instanceof AggregateError ? error.errors : [error]
+      for (const failure of failures) {
+        this.ctx.logger.warn(`workspace: ending session '${sessionId}' for deletion failed: ${String(failure)}`)
+      }
+    }
+  }
+
+  /**
+   * Ask every provider to stop a session's running work — its turn, subagent
+   * descendants, owned jobs, and active schedules — through the same cancel
+   * paths the user's own stop actions use, so the session log ends every open
+   * turn regularly. Requests are issued without waiting for running work to
+   * settle. A failing provider is logged, never a reason to abandon the
+   * caller's own write: the stop is a courtesy to that write, not its gate.
+   * @param sessionId - The session whose work is stopped.
+   * @returns resolution once every provider was asked.
+   */
   private async stopSessionActivity(sessionId: SessionId): Promise<void> {
     try {
       await this.ctx.parallel('workspace/session-stop', { sessionId })
@@ -487,7 +604,7 @@ export class WorkspaceRegistry extends Service {
       /* v8 ignore next -- the plain arm guards a rethrowing dispatcher. */
       const failures = error instanceof AggregateError ? error.errors : [error]
       for (const failure of failures) {
-        this.ctx.logger.warn(`workspace: stopping session '${sessionId}' for archive failed: ${String(failure)}`)
+        this.ctx.logger.warn(`workspace: stopping session '${sessionId}' failed: ${String(failure)}`)
       }
     }
   }

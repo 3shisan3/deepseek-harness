@@ -934,6 +934,27 @@ describe('JsonlSessionPersistence: immutable format generations', () => {
     }
   })
 
+  it('abandons an in-flight historical preparation when the session is deleted', async () => {
+    const header = meta('released-v0-delete-preparation', '/work')
+    const sourcePath = historicalLogPath(root, header.cwd, header.id)
+    await mkdir(dirname(sourcePath), { recursive: true })
+    await writeFile(sourcePath, `${JSON.stringify(releasedV0Header(header))}\n`)
+    const pause = pausePhysicalRead(sourcePath)
+    const internals = ctx.sessionPersistence as unknown as {
+      migrationPreparations: Map<SessionId, { waiters: number }>
+    }
+
+    const opening = ctx.sessionPersistence.open(header.id, 'read')
+    await pause.entered
+    await expect.poll(() => internals.migrationPreparations.has(header.id)).toBe(true)
+
+    await expect(ctx.sessionPersistence.delete(header.id)).resolves.toBe(true)
+    expect(internals.migrationPreparations.has(header.id)).toBe(false)
+    pause.release()
+    // The abandoned preparation's waiter observes the abort, never a stored log.
+    await expect(opening).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
   it('cancels shared historical preparation after its last waiter leaves', async () => {
     const header = meta('released-v0-last-waiter-cancellation', '/work')
     const sourcePath = historicalLogPath(root, header.cwd, header.id)
